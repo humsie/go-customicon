@@ -43,7 +43,23 @@ func SetCustomIcon(imagePath, targetPath string) {
 	var err error
 	ci := CustomIcon{}
 
-	err = ci.SetImagePath(imagePath)
+	err = ci.SetImageFromPath(imagePath)
+	if err != nil {
+		log.Fatalln("Error:", err.Error())
+	}
+	err = ci.SetTargetPath(targetPath)
+	if err != nil {
+		log.Fatalln("Error:", err.Error())
+	}
+
+	ci.CreateIconSet()
+	ci.WriteExtendedAttributes()
+}
+func SetCustomIconFromImage(image image.Image, targetPath string) {
+	var err error
+	ci := CustomIcon{}
+
+	err = ci.SetImage(image)
 	if err != nil {
 		log.Fatalln("Error:", err.Error())
 	}
@@ -70,14 +86,20 @@ func RemoveCustomIcon(targetPath string) {
 }
 
 type CustomIcon struct {
-	imagePath   string
 	targetPath  string
 	targetIsDir bool
+
+	imageData image.Image
 
 	iconSet []byte
 }
 
-func (ci *CustomIcon) SetImagePath(path string) error {
+func (ci *CustomIcon) SetImage(image image.Image) error {
+	ci.imageData = image
+	return nil
+}
+
+func (ci *CustomIcon) SetImageFromPath(path string) error {
 
 	imageInfo, err := os.Stat(path)
 	if err != nil {
@@ -86,7 +108,17 @@ func (ci *CustomIcon) SetImagePath(path string) error {
 	if imageInfo.IsDir() {
 		return errors.New("ImagePath cant be a directory")
 	}
-	ci.imagePath = path
+
+	pngf, err := os.Open(path)
+	if err != nil {
+		log.Fatalf("opening source image: %v", err)
+	}
+	defer pngf.Close()
+	ci.imageData, _, err = image.Decode(pngf)
+	if err != nil {
+		log.Fatalf("decoding source image: %v", err)
+	}
+
 	return nil
 
 }
@@ -108,19 +140,9 @@ func (ci *CustomIcon) SetTargetPath(path string) error {
 
 func (ci *CustomIcon) CreateIconSet() {
 
-	pngf, err := os.Open(ci.imagePath)
-	if err != nil {
-		log.Fatalf("opening source image: %v", err)
-	}
-	defer pngf.Close()
-	srcImg, _, err := image.Decode(pngf)
-	if err != nil {
-		log.Fatalf("decoding source image: %v", err)
-	}
-
 	buffer := bytes.NewBuffer([]byte{})
 
-	if err := icns.Encode(buffer, srcImg); err != nil {
+	if err := icns.Encode(buffer, ci.imageData); err != nil {
 		log.Fatalf("encoding iconset failed: %v", err)
 	}
 
