@@ -149,6 +149,9 @@ func (ci *CustomIcon) CreateIconSet() {
 	ci.iconSet = buffer.Bytes()
 
 }
+func (ci *CustomIcon) GetIconSet() []byte {
+	return ci.iconSet
+}
 
 func (ci *CustomIcon) ShowAttributes() {
 
