@@ -4,7 +4,7 @@ go 1.17
 
 require (
 	github.com/jackmordaunt/icns v1.0.0
-	github.com/pkg/xattr v0.4.7
+	github.com/pkg/xattr v0.4.10
 )
 
 require (
