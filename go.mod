@@ -1,9 +1,12 @@
 module github.com/humsie/go-customicon
 
-go 1.17
+go 1.21.5
+
+toolchain go1.24.1
 
 require (
 	github.com/jackmordaunt/icns v1.0.0
+	github.com/jackmordaunt/icns/v3 v3.0.1
 	github.com/pkg/xattr v0.4.7
 )
 
