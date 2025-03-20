@@ -55,6 +55,22 @@ func SetCustomIcon(imagePath, targetPath string) {
 	ci.CreateIconSet()
 	ci.WriteExtendedAttributes()
 }
+
+func SetCustomIconFromIconset(icnsPath, targetPath string) {
+
+	var err error
+	ci := CustomIcon{}
+
+	ci.SetIconSetFromPath(icnsPath)
+
+	err = ci.SetTargetPath(targetPath)
+	if err != nil {
+		log.Fatalln("Error:", err.Error())
+	}
+
+	ci.WriteExtendedAttributes()
+}
+
 func SetCustomIconFromImage(image image.Image, targetPath string) {
 	var err error
 	ci := CustomIcon{}
@@ -123,6 +139,29 @@ func (ci *CustomIcon) SetImageFromPath(path string) error {
 
 }
 
+func (ci *CustomIcon) SetIconSetFromPath(path string) error {
+
+	imageInfo, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if imageInfo.IsDir() {
+		return errors.New("ImagePath cant be a directory")
+	}
+
+	var icnsdata []byte
+
+	icnsdata, err = os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("opening source image: %v", err)
+	}
+
+	ci.iconSet = icnsdata
+
+	return nil
+
+}
+
 func (ci *CustomIcon) SetTargetPath(path string) error {
 
 	targetInfo, err := os.Stat(path)
@@ -146,8 +185,11 @@ func (ci *CustomIcon) CreateIconSet() {
 		log.Fatalf("encoding iconset failed: %v", err)
 	}
 
-	ci.iconSet = buffer.Bytes()
+	ci.SetIconSet(buffer.Bytes())
 
+}
+func (ci *CustomIcon) SetIconSet(data []byte) {
+	ci.iconSet = data
 }
 func (ci *CustomIcon) GetIconSet() []byte {
 	return ci.iconSet

@@ -7,10 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-)
-
-const (
-	PATH = "downloads/5184444/images/"
+	"strings"
 )
 
 func main() {
@@ -40,9 +37,13 @@ func main() {
 
 	imagePath, _ = filepath.Abs(*flagImage)
 
-	fmt.Println("TargetPath: %s", targetPath)
-	fmt.Println("ImagePath: %s", imagePath)
+	fmt.Printf("TargetPath: %s\n", targetPath)
+	fmt.Printf("ImagePath: %s\n", imagePath)
 
-	customicon.SetCustomIcon(imagePath, targetPath)
+	if strings.HasSuffix(imagePath, ".icns") {
+		customicon.SetCustomIconFromIconset(imagePath, targetPath)
+	} else {
+		customicon.SetCustomIcon(imagePath, targetPath)
+	}
 
 }
