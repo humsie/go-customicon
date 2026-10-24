@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/humsie/go-customicon/apple"
-	"github.com/jackmordaunt/icns"
+	"github.com/jackmordaunt/icns/v4"
 	"github.com/pkg/xattr"
 )
 
