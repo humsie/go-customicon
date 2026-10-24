@@ -2,17 +2,17 @@ package go_customicon
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/humsie/go-customicon/apple"
-	"github.com/humsie/go-customicon/helpers"
-	"github.com/jackmordaunt/icns"
-	"github.com/pkg/xattr"
 	"image"
-	"log"
 	"os"
 	"strings"
+
+	"github.com/humsie/go-customicon/apple"
+	"github.com/jackmordaunt/icns"
+	"github.com/pkg/xattr"
 )
 
 var (
@@ -38,76 +38,127 @@ const (
 	FaliasFile                     // A | a    Alias file
 )
 
-func SetCustomIcon(imagePath, targetPath string) {
+const (
+	attrFinderInfo   = "com.apple.FinderInfo"
+	attrResourceFork = "com.apple.ResourceFork"
 
-	var err error
-	ci := CustomIcon{}
+	finderInfoLength = 32
+	// finderFlagsOffset is where the 16-bit big-endian Finder flags live
+	// inside the 32-byte FinderInfo.
+	finderFlagsOffset = 8
 
-	err = ci.SetImageFromPath(imagePath)
-	if err != nil {
-		log.Fatalln("Error:", err.Error())
+	// iconFileName is the hidden file that carries a folder's custom icon.
+	iconFileName = "Icon\r"
+)
+
+var (
+	defaultLayout = LayoutXattr
+)
+
+// Layout is how the icon ends up on disk.
+type Layout int
+
+const (
+	// LayoutXattr writes com.apple.* extended attributes, as macOS does on
+	// its own disks and on an SMB mount.
+	LayoutXattr Layout = iota
+	// LayoutSynology writes the files Synology DSM keeps those attributes
+	// in (@eaDir/<name>@SynoResource), for a process that writes straight
+	// to the volume instead of through SMB.
+	LayoutSynology
+)
+
+func (l Layout) String() string {
+	switch l {
+	case LayoutXattr:
+		return "xattr"
+	case LayoutSynology:
+		return "synology"
 	}
-	err = ci.SetTargetPath(targetPath)
-	if err != nil {
-		log.Fatalln("Error:", err.Error())
-	}
-
-	ci.CreateIconSet()
-	ci.WriteExtendedAttributes()
+	return fmt.Sprintf("Layout(%d)", int(l))
 }
 
-func SetCustomIconFromIconset(icnsPath, targetPath string) {
-
-	var err error
-	ci := CustomIcon{}
-
-	ci.SetIconSetFromPath(icnsPath)
-
-	err = ci.SetTargetPath(targetPath)
-	if err != nil {
-		log.Fatalln("Error:", err.Error())
+func ParseLayout(s string) (Layout, error) {
+	switch s {
+	case "xattr":
+		return LayoutXattr, nil
+	case "synology":
+		return LayoutSynology, nil
 	}
-
-	ci.WriteExtendedAttributes()
+	return 0, fmt.Errorf("unknown layout %q (want xattr or synology)", s)
 }
 
-func SetCustomIconFromImage(image image.Image, targetPath string) {
-	var err error
-	ci := CustomIcon{}
-
-	err = ci.SetImage(image)
-	if err != nil {
-		log.Fatalln("Error:", err.Error())
-	}
-	err = ci.SetTargetPath(targetPath)
-	if err != nil {
-		log.Fatalln("Error:", err.Error())
-	}
-
-	ci.CreateIconSet()
-	ci.WriteExtendedAttributes()
+func SetLayout(layout Layout) {
+	defaultLayout = layout
 }
 
-func RemoveCustomIcon(targetPath string) {
+func NewCustomIcon() CustomIcon {
+	return CustomIcon{layout: defaultLayout}
+}
 
-	var err error
-	ci := CustomIcon{}
+func SetCustomIcon(imagePath, targetPath string) error {
+	ci := NewCustomIcon()
 
-	err = ci.SetTargetPath(targetPath)
-	if err != nil {
-		log.Fatalln("Error:", err.Error())
+	if err := ci.SetImageFromPath(imagePath); err != nil {
+		return err
 	}
+	if err := ci.SetTargetPath(targetPath); err != nil {
+		return err
+	}
+	if err := ci.CreateIconSet(); err != nil {
+		return err
+	}
+	return ci.WriteExtendedAttributes()
+}
 
-	ci.RemoveExtendedAttributes()
+func SetCustomIconFromIconset(icnsPath, targetPath string) error {
+	ci := NewCustomIcon()
+
+	if err := ci.SetIconSetFromPath(icnsPath); err != nil {
+		return err
+	}
+	if err := ci.SetTargetPath(targetPath); err != nil {
+		return err
+	}
+	return ci.WriteExtendedAttributes()
+}
+
+func SetCustomIconFromImage(image image.Image, targetPath string) error {
+	ci := NewCustomIcon()
+
+	if err := ci.SetImage(image); err != nil {
+		return err
+	}
+	if err := ci.SetTargetPath(targetPath); err != nil {
+		return err
+	}
+	if err := ci.CreateIconSet(); err != nil {
+		return err
+	}
+	return ci.WriteExtendedAttributes()
+}
+
+func RemoveCustomIcon(targetPath string) error {
+	ci := NewCustomIcon()
+
+	if err := ci.SetTargetPath(targetPath); err != nil {
+		return err
+	}
+	return ci.RemoveExtendedAttributes()
 }
 
 type CustomIcon struct {
 	targetPath  string
 	targetIsDir bool
+	layout      Layout
 
 	imageData image.Image
 
 	iconSet []byte
+}
+
+func (ci *CustomIcon) SetLayout(layout Layout) {
+	ci.layout = layout
 }
 
 func (ci *CustomIcon) SetImage(image image.Image) error {
@@ -127,12 +178,12 @@ func (ci *CustomIcon) SetImageFromPath(path string) error {
 
 	pngf, err := os.Open(path)
 	if err != nil {
-		log.Fatalf("opening source image: %v", err)
+		return fmt.Errorf("opening source image: %w", err)
 	}
 	defer pngf.Close()
 	ci.imageData, _, err = image.Decode(pngf)
 	if err != nil {
-		log.Fatalf("decoding source image: %v", err)
+		return fmt.Errorf("decoding source image: %w", err)
 	}
 
 	return nil
@@ -149,11 +200,9 @@ func (ci *CustomIcon) SetIconSetFromPath(path string) error {
 		return errors.New("ImagePath cant be a directory")
 	}
 
-	var icnsdata []byte
-
-	icnsdata, err = os.ReadFile(path)
+	icnsdata, err := os.ReadFile(path)
 	if err != nil {
-		log.Fatalf("opening source image: %v", err)
+		return fmt.Errorf("opening source iconset: %w", err)
 	}
 
 	ci.iconSet = icnsdata
@@ -170,23 +219,26 @@ func (ci *CustomIcon) SetTargetPath(path string) error {
 	}
 
 	ci.targetPath = path
-	if targetInfo.IsDir() {
-		ci.targetIsDir = true
-	}
+	ci.targetIsDir = targetInfo.IsDir()
 
 	return nil
 }
 
-func (ci *CustomIcon) CreateIconSet() {
+func (ci *CustomIcon) CreateIconSet() error {
+
+	if ci.imageData == nil {
+		return errors.New("no image set")
+	}
 
 	buffer := bytes.NewBuffer([]byte{})
 
 	if err := icns.Encode(buffer, ci.imageData); err != nil {
-		log.Fatalf("encoding iconset failed: %v", err)
+		return fmt.Errorf("encoding iconset: %w", err)
 	}
 
 	ci.SetIconSet(buffer.Bytes())
 
+	return nil
 }
 func (ci *CustomIcon) SetIconSet(data []byte) {
 	ci.iconSet = data
@@ -195,104 +247,187 @@ func (ci *CustomIcon) GetIconSet() []byte {
 	return ci.iconSet
 }
 
-func (ci *CustomIcon) ShowAttributes() {
+func (ci *CustomIcon) iconFilePath() string {
+	if ci.layout == LayoutSynology {
+		return ci.targetPath + "/" + synoIconFileName
+	}
+	return ci.targetPath + "/" + iconFileName
+}
 
-	var src *os.File
-	var err error
+func (ci *CustomIcon) ShowAttributes() error {
+
+	if ci.layout == LayoutSynology {
+		return ci.showSynology()
+	}
+
+	path := ci.targetPath
 	if ci.targetIsDir {
-		xB := []byte{13}
-		src, err = os.Open(ci.targetPath + "/Icon" + string(xB))
-	} else {
-		src, err = os.Open(ci.targetPath)
+		path = ci.iconFilePath()
 	}
-	if err != nil {
-		log.Fatalf("opening destination file: %v", err)
-	}
-	defer src.Close()
 
-	attrlist, err := xattr.FList(src)
+	attrlist, err := xattr.List(path)
 	if err != nil {
-		log.Fatalf("reading xattr: %v", err)
+		return fmt.Errorf("reading xattr list of %s: %w", path, err)
 	}
 	fmt.Println("Attributes found:\n - ", strings.Join(attrlist, "\n - "))
 
-	attrFinderInfo, err := xattr.FGet(src, "com.apple.FinderInfo")
+	finderInfo, err := xattr.Get(path, attrFinderInfo)
+	if err != nil {
+		return fmt.Errorf("reading %s of %s: %w", attrFinderInfo, path, err)
+	}
 
-	fmt.Printf("%v\n", hex.Dump(attrFinderInfo))
+	fmt.Printf("%v\n", hex.Dump(finderInfo))
 
-	for i := range attrFinderInfo {
-		if attrFinderInfo[i] > 0 {
-			fmt.Println(i, "=>", attrFinderInfo[i])
+	for i := range finderInfo {
+		if finderInfo[i] > 0 {
+			fmt.Println(i, "=>", finderInfo[i])
 		}
 	}
+
+	return nil
 }
 
-func (ci *CustomIcon) RemoveExtendedAttributes() {
+func (ci *CustomIcon) RemoveExtendedAttributes() error {
+
+	if ci.layout == LayoutSynology {
+		return ci.removeSynology()
+	}
 
 	if ci.targetIsDir {
-		xB := []byte{13}
-
-		err := os.Remove(ci.targetPath + "/Icon" + string(xB))
-		if err != nil {
-			log.Fatalf("Can't delete special icon file in target folder: %v", err)
+		err := os.Remove(ci.iconFilePath())
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("deleting icon file in target folder: %w", err)
 		}
-
-		xattr.Remove(ci.targetPath, "com.apple.FinderInfo")
 	} else {
-		xattr.Remove(ci.targetPath, "com.apple.ResourceFork")
+		err := xattr.Remove(ci.targetPath, attrResourceFork)
+		if err != nil && !isNoAttr(err) {
+			return fmt.Errorf("removing %s: %w", attrResourceFork, err)
+		}
 	}
 
-	xattr.Remove(ci.targetPath, "com.apple.FinderInfo")
-
+	return clearFinderFlags(ci.targetPath, FcustomIcon)
 }
-func (ci *CustomIcon) WriteExtendedAttributes() {
+
+func (ci *CustomIcon) WriteExtendedAttributes() error {
+
+	if len(ci.iconSet) == 0 {
+		return errors.New("no iconset set")
+	}
 
 	resourceForkData, err := apple.NewResourceForkWithData(ci.iconSet).Bytes()
 	if err != nil {
-		log.Println("Blaat")
-		return
+		return fmt.Errorf("building resource fork: %w", err)
 	}
 
-	if ci.targetIsDir {
-
-		xB := []byte{13}
-		iconFile, err := os.Create(ci.targetPath + "/Icon" + string(xB))
-		if err != nil {
-			log.Fatalf("Can't create special icon file in target folder: %v", err)
-		}
-		defer iconFile.Close()
-		xattr.FSet(iconFile, "com.apple.ResourceFork", resourceForkData)
-
-		finderInfoFile := make([]byte, 32)
-		temp := helpers.Int32toBytes(Fhidden + FcustomIcon)
-		finderInfoFile[8] = temp[2]
-		finderInfoFile[9] = temp[3]
-
-		xattr.FSet(iconFile, "com.apple.FinderInfo", finderInfoFile)
-
-		finderInfoFolder := make([]byte, 32)
-		temp = helpers.Int32toBytes(FcustomIcon)
-		finderInfoFolder[8] = temp[2]
-		finderInfoFolder[9] = temp[3]
-
-		xattr.Set(ci.targetPath, "com.apple.FinderInfo", finderInfoFolder)
-
-	} else {
-
-		targetFile, err := os.Open(ci.targetPath)
-		if err != nil {
-			log.Fatalf("Can't open target file: %v", err)
-		}
-		defer targetFile.Close()
-		xattr.FSet(targetFile, "com.apple.ResourceFork", resourceForkData)
-
-		finderInfoFile := make([]byte, 32)
-		temp := helpers.Int32toBytes(FcustomIcon)
-		finderInfoFile[8] = temp[2]
-		finderInfoFile[9] = temp[3]
-
-		xattr.FSet(targetFile, "com.apple.FinderInfo", finderInfoFile)
-
+	if ci.layout == LayoutSynology {
+		return ci.writeSynology(resourceForkData)
 	}
 
+	if !ci.targetIsDir {
+		if err := xattr.Set(ci.targetPath, attrResourceFork, resourceForkData); err != nil {
+			return fmt.Errorf("writing %s: %w", attrResourceFork, err)
+		}
+		return setFinderFlags(ci.targetPath, FcustomIcon)
+	}
+
+	iconPath := ci.iconFilePath()
+	iconFile, err := os.Create(iconPath)
+	if err != nil {
+		return fmt.Errorf("creating icon file in target folder: %w", err)
+	}
+	if err := iconFile.Close(); err != nil {
+		return fmt.Errorf("closing icon file in target folder: %w", err)
+	}
+
+	if err := xattr.Set(iconPath, attrResourceFork, resourceForkData); err != nil {
+		return fmt.Errorf("writing %s on icon file: %w", attrResourceFork, err)
+	}
+	if err := setFinderFlags(iconPath, Fhidden|FcustomIcon); err != nil {
+		return fmt.Errorf("icon file: %w", err)
+	}
+	if err := setFinderFlags(ci.targetPath, FcustomIcon); err != nil {
+		return fmt.Errorf("target folder: %w", err)
+	}
+
+	return nil
+}
+
+// setFinderFlags ORs flags into the Finder flags of path, keeping the rest of
+// an existing FinderInfo (labels, other flags) intact.
+func setFinderFlags(path string, flags uint16) error {
+	finderInfo, err := readFinderInfo(path)
+	if err != nil {
+		return err
+	}
+
+	finderInfo = withFinderFlags(finderInfo, flags, 0)
+
+	if err := xattr.Set(path, attrFinderInfo, finderInfo); err != nil {
+		return fmt.Errorf("writing %s: %w", attrFinderInfo, err)
+	}
+	return nil
+}
+
+// clearFinderFlags clears flags in the Finder flags of path. A FinderInfo that
+// ends up all zeroes is removed rather than written back.
+func clearFinderFlags(path string, flags uint16) error {
+	finderInfo, err := readFinderInfo(path)
+	if err != nil {
+		return err
+	}
+
+	finderInfo = withFinderFlags(finderInfo, 0, flags)
+
+	if isZeroFinderInfo(finderInfo) {
+		err = xattr.Remove(path, attrFinderInfo)
+		if err != nil && !isNoAttr(err) {
+			return fmt.Errorf("removing %s: %w", attrFinderInfo, err)
+		}
+		return nil
+	}
+
+	if err := xattr.Set(path, attrFinderInfo, finderInfo); err != nil {
+		return fmt.Errorf("writing %s: %w", attrFinderInfo, err)
+	}
+	return nil
+}
+
+// readFinderInfo returns the FinderInfo of path, padded to 32 bytes, or a
+// zeroed one when the attribute does not exist yet.
+func readFinderInfo(path string) ([]byte, error) {
+	finderInfo := make([]byte, finderInfoLength)
+
+	existing, err := xattr.Get(path, attrFinderInfo)
+	if err != nil {
+		if isNoAttr(err) {
+			return finderInfo, nil
+		}
+		return nil, fmt.Errorf("reading %s: %w", attrFinderInfo, err)
+	}
+
+	copy(finderInfo, existing)
+	return finderInfo, nil
+}
+
+// withFinderFlags sets and clears bits in the Finder flags of finderInfo,
+// padding it to 32 bytes first. Every other byte is left as it was.
+func withFinderFlags(finderInfo []byte, set, clear uint16) []byte {
+	if len(finderInfo) < finderInfoLength {
+		padded := make([]byte, finderInfoLength)
+		copy(padded, finderInfo)
+		finderInfo = padded
+	}
+
+	current := binary.BigEndian.Uint16(finderInfo[finderFlagsOffset:])
+	binary.BigEndian.PutUint16(finderInfo[finderFlagsOffset:], (current|set)&^clear)
+
+	return finderInfo
+}
+
+func isZeroFinderInfo(finderInfo []byte) bool {
+	return bytes.Count(finderInfo, []byte{0}) == len(finderInfo)
+}
+
+func isNoAttr(err error) bool {
+	return errors.Is(err, xattr.ENOATTR)
 }
