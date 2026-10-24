@@ -95,17 +95,26 @@ func (ci *CustomIcon) writeSynology(resourceForkData []byte) error {
 		return synoSetIcon(ci.targetPath, FcustomIcon, resourceForkData)
 	}
 
+	// Replace the icon file rather than reuse it. With the file kept, only the
+	// @eaDir sidecar changes, and Finder keeps showing the icon it cached; a
+	// file that disappears and comes back makes it read the new one. The
+	// sidecar is written before the file reappears, so the data is in place
+	// by the time Finder looks.
 	iconPath := ci.iconFilePath()
+	if err := os.Remove(iconPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing old icon file in target folder: %w", err)
+	}
+
+	if err := synoSetIcon(iconPath, Fhidden|FcustomIcon, resourceForkData); err != nil {
+		return fmt.Errorf("icon file: %w", err)
+	}
+
 	iconFile, err := os.Create(iconPath)
 	if err != nil {
 		return fmt.Errorf("creating icon file in target folder: %w", err)
 	}
 	if err := iconFile.Close(); err != nil {
 		return fmt.Errorf("closing icon file in target folder: %w", err)
-	}
-
-	if err := synoSetIcon(iconPath, Fhidden|FcustomIcon, resourceForkData); err != nil {
-		return fmt.Errorf("icon file: %w", err)
 	}
 
 	// The folder only carries the flag; its resource fork stays as it is
